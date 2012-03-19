@@ -75,11 +75,38 @@ main(Configs) ->
     %% Spin up the application
     ok = basho_bench_app:start(),
 
-    %% Pull the runtime duration from the config and sleep until that's passed OR
-    %% the supervisor process exits
     Mref = erlang:monitor(process, whereis(basho_bench_sup)),
-    DurationMins = basho_bench_config:get(duration),
-    wait_for_stop(Mref, DurationMins).
+
+    % do warm up (if needed)
+    case basho_bench_config:get(warmup, []) of
+       [] ->
+          nothing_to_do;
+       {_NumWarmers, WarmupDurationMins} ->
+          warmup(WarmupDurationMins)
+    end,
+
+    % Run measurements & stats collection
+    ok = basho_bench_stats:run(),
+    ok = basho_bench_measurement:run(),
+
+    % start the actual worker clients
+    % Compute the duration to run the benchmark for.
+    % The benchmark can be run with a fixed number of clients for a fixed
+    % duration, or with an increasing number of clients over a number of
+    % timesteps to test scalability in number of clients.
+    case basho_bench_config:get(scale_clients, []) of
+       [] ->
+          %% Pull the runtime duration from the config and sleep until that's passed OR
+          %% the supervisor process exits
+          DurationMins = basho_bench_config:get(duration),
+          basho_bench_worker:run( basho_bench_sup:clients() ),
+          wait_for_stop(Mref, DurationMins);
+
+       {ClientsInc, DurationMins, MaxClients} ->
+          AllClients = basho_bench_sup:clients(),
+          ok = basho_bench_worker:run(lists:sublist(AllClients, 1, ClientsInc)),
+          scale_in_clients(Mref, ClientsInc, ClientsInc, DurationMins, MaxClients - ClientsInc)
+    end.
 
 
 
@@ -105,6 +132,31 @@ wait_for_stop(Mref, DurationMins) ->
             ?CONSOLE("Test completed after ~p mins.\n", [DurationMins])
     end.
 
+
+scale_in_clients(Mref, _CurrClients, _ClientsInc, DurationMins, ClientsRem) when ClientsRem =< 0 ->
+   wait_for_stop(Mref, DurationMins);
+scale_in_clients(Mref, CurrClients, ClientsInc, DurationMins, ClientsRem) ->
+   Duration = timer:minutes(DurationMins) + timer:seconds(1),
+   receive
+      {'DOWN', Mref, _, _, Info} ->
+         ?CONSOLE("Test stopped: ~p\n", [Info])
+
+   after Duration ->
+         ?CONSOLE("Starting ~p additional Clients\n", [ClientsInc]),
+         NewClients = lists:sublist(basho_bench_sup:clients(), CurrClients + 1, ClientsInc),
+         basho_bench_worker:run(NewClients),
+         scale_in_clients(Mref, CurrClients + ClientsInc, ClientsInc, DurationMins, ClientsRem - ClientsInc)
+   end.
+
+
+warmup(DurationMins) ->
+   Duration = timer:minutes(DurationMins) + timer:seconds(1),
+   Warmers = basho_bench_sup:warmers(),
+   ?CONSOLE("Warming up for ~p minutes\n", [DurationMins]),
+   basho_bench_worker:run(Warmers),
+   timer:sleep(Duration),
+   [ basho_bench_sup:stop_child(Wid) || Wid <- basho_bench_sup:warmers_ids() ],
+   ?CONSOLE("Done warming up\n", []).
 
 
 %%

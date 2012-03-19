@@ -24,7 +24,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/2,
+-export([start_link/3,
          run/1,
          stop/1]).
 
@@ -42,7 +42,9 @@
                  rng_seed,
                  parent_pid,
                  worker_pid,
-                 sup_id}).
+                 sup_id,
+                 type
+              }).
 
 -include("basho_bench.hrl").
 
@@ -50,8 +52,8 @@
 %% API
 %% ====================================================================
 
-start_link(SupChild, Id) ->
-    gen_server:start_link(?MODULE, [SupChild, Id], []).
+start_link(SupChild, Type, Id) ->
+    gen_server:start_link(?MODULE, [SupChild, Type, Id], []).
 
 run(Pids) ->
     [ok = gen_server:call(Pid, run) || Pid <- Pids],
@@ -65,7 +67,7 @@ stop(Pids) ->
 %% gen_server callbacks
 %% ====================================================================
 
-init([SupChild, Id]) ->
+init([SupChild, Type, Id]) ->
     %% Setup RNG seed for worker sub-process to use; incorporate the ID of
     %% the worker to ensure consistency in load-gen
     %%
@@ -89,7 +91,9 @@ init([SupChild, Id]) ->
                      ops = Ops, ops_len = size(Ops),
                      rng_seed = RngSeed,
                      parent_pid = self(),
-                     sup_id = SupChild},
+                     sup_id = SupChild,
+                     type = Type
+                  },
 
     %% Use a dedicated sub-process to do the actual work. The work loop may need
     %% to sleep or otherwise delay in a way that would be inappropriate and/or
@@ -227,18 +231,27 @@ worker_next_op(State) ->
     case Result of
         {ok, DriverState} ->
             %% Success
-            basho_bench_stats:op_complete(Next, ok, ElapsedUs),
+            case State#state.type of
+               client -> basho_bench_stats:op_complete(Next, ok, ElapsedUs);
+               _ -> do_nothing
+            end,
             {ok, State#state { driver_state = DriverState}};
 
         {error, Reason, DriverState} ->
             %% Driver encountered a recoverable error
-            basho_bench_stats:op_complete(Next, {error, Reason}, ElapsedUs),
+            case State#state.type of
+               client -> basho_bench_stats:op_complete(Next, {error, Reason}, ElapsedUs);
+               _ -> do_nothing
+            end,
             {ok, State#state { driver_state = DriverState}};
 
         {'EXIT', Reason} ->
             %% Driver crashed, generate a crash error and terminate. This will take down
             %% the corresponding worker which will get restarted by the appropriate supervisor.
-            basho_bench_stats:op_complete(Next, {error, crash}, ElapsedUs),
+            case State#state.type of
+               client -> basho_bench_stats:op_complete(Next, {error, crash}, ElapsedUs);
+               _ -> do_nothing
+            end,
 
             %% Give the driver a chance to cleanup
             (catch (State#state.driver):terminate({'EXIT', Reason}, State#state.driver_state)),
