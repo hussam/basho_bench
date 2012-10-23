@@ -164,7 +164,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%
 stop_worker(SupChild) ->
     ok = basho_bench_sup:stop_child(SupChild),
-    case basho_bench_sup:workers() of
+    case basho_bench_sup:all_workers() of
         [] ->
             %% No more workers -- stop the system
             basho_bench_app:stop();

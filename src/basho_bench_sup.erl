@@ -28,6 +28,7 @@
          clients/0,
          warmers/0,
          warmers_ids/0,
+         all_workers/0,
          stop_child/1
       ]).
 
@@ -54,6 +55,9 @@ warmers() ->
 
 warmers_ids() ->
     [{warmer, Id} || {{warmer, Id}, _Pid, worker, [basho_bench_worker]} <- supervisor:which_children(?MODULE)].
+
+all_workers() ->
+    [Pid || {_, Pid, worker, [basho_bench_worker]} <- supervisor:which_children(?MODULE)].
 
 
 stop_child(Id) ->
@@ -104,7 +108,7 @@ init([]) ->
 worker_specs(_Kind, 0, Acc) ->
     Acc;
 worker_specs(Kind, Count, Acc) ->
-    Id = list_to_atom(lists:concat(['basho_bench_worker_', Count])),
-    Spec = {{Kind, Id}, {basho_bench_worker, start_link, [Id, Kind, Count]},
+    Id = {Kind, list_to_atom(lists:concat(['basho_bench_worker_', Count]))},
+    Spec = {Id, {basho_bench_worker, start_link, [Id, Kind, Count]},
             permanent, 5000, worker, [basho_bench_worker]},
     worker_specs(Kind, Count-1, [Spec | Acc]).
